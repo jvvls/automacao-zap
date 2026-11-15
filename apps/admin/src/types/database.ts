@@ -407,7 +407,13 @@ export type Database = {
     };
     Functions: {
       create_order_with_items: {
-        Args: { p_customer_id: string; p_idempotency_key: string; p_items: Json };
+        Args: {
+          p_customer_id: string;
+          p_destination_postal_code?: string;
+          p_idempotency_key: string;
+          p_items: Json;
+          p_shipping_quote_id?: string;
+        };
         Returns: string;
       };
       is_admin: { Args: Record<PropertyKey, never>; Returns: boolean };
