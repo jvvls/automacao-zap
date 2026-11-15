@@ -1,6 +1,7 @@
 // Máquina de estados da conversa (seção 8). Função pura: recebe estado,
 // contexto e mensagem e devolve o novo estado, o novo contexto e as ações que
 // o webhook deve executar. Não acessa banco nem a Meta.
+import type { Json } from "./database.types.ts";
 
 export type ConversationState =
   | "MAIN_MENU"
@@ -13,7 +14,7 @@ export type ConversationState =
   | "SHIPPING_SELECTION"
   | "ORDER_CONFIRMATION";
 
-export type ConversationContext = Record<string, unknown>;
+export type ConversationContext = { [key: string]: Json | undefined };
 
 export type IncomingMessage =
   | { kind: "text"; text: string }

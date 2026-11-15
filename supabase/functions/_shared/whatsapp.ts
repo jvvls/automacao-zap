@@ -1,11 +1,12 @@
 // Integração com a WhatsApp Cloud API (seção 9): verificação da assinatura,
 // leitura dos eventos do webhook e envio de mensagens.
+import type { Json as JsonValue } from "./database.types.ts";
 import type { IncomingMessage } from "./state-machine.ts";
 
 const GRAPH_API_VERSION = "v23.0";
 const SEND_TIMEOUT_MS = 10_000;
 
-type Json = Record<string, unknown>;
+type Json = { [key: string]: JsonValue | undefined };
 
 function isObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
