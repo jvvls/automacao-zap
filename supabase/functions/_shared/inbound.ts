@@ -29,7 +29,9 @@ import {
   ProductUnavailableError,
 } from "./orders.ts";
 import { cartView, mainMenuScreen, type Screen } from "./screens.ts";
-import { type Action, isInactive, transition, type Transition } from "./state-machine.ts";
+import { quoteShipping, type ShippingConfig, shippingConfigFromEnv } from "./shipping.ts";
+import type { ShippingOption } from "./shipping-model.ts";
+import { type Action, applyShippingQuote, isInactive, transition, type Transition } from "./state-machine.ts";
 import { createServiceClient, type Db, requireEnv } from "./supabase.ts";
 import {
   contactName,
@@ -52,6 +54,7 @@ export interface Deps {
   db: Db;
   whatsapp: WhatsAppConfig;
   ownerPhone: string;
+  shipping: ShippingConfig | null;
 }
 
 export function depsFromEnv(): Deps {
@@ -63,6 +66,7 @@ export function depsFromEnv(): Deps {
       graphUrl: Deno.env.get("WHATSAPP_GRAPH_URL") ?? "https://graph.facebook.com",
     },
     ownerPhone: requireEnv("OWNER_WHATSAPP_NUMBER"),
+    shipping: shippingConfigFromEnv(),
   };
 }
 
@@ -121,15 +125,19 @@ interface Advanced {
 // recalcula a partir do estado gravado pela outra execução. O pedido é criado
 // antes de gravar a conversa: se a gravação ou o envio falharem, reprocessar
 // a mesma mensagem encontra o carrinho e a RPC devolve o mesmo pedido.
+// A cotação de frete também vem antes de gravar, e é feita uma vez só por CEP
+// mesmo com novas tentativas.
 async function advance(
-  db: Db,
+  deps: Deps,
   customer: Customer,
   initial: Conversation,
   message: ReturnType<typeof toIncomingMessage>,
   waMessageId: string,
 ): Promise<Advanced | null> {
+  const { db } = deps;
   let conversation = initial;
   let catalog = await loadCatalog(db);
+  const quotes = new Map<string, ShippingOption[] | null>();
   for (let attempt = 0; attempt < MAX_SAVE_ATTEMPTS; attempt++) {
     if (conversation.humanHandoff) return null;
 
@@ -142,11 +150,20 @@ async function advance(
       catalog,
     );
 
+    const quote = result.actions.find((action) => action.type === "quote_shipping");
+    if (quote) {
+      const key = `${quote.postalCode}:${JSON.stringify(quote.items)}`;
+      if (!quotes.has(key)) {
+        quotes.set(key, await quoteShipping(db, deps.shipping, conversation.id, quote.postalCode, quote.items));
+      }
+      result = applyShippingQuote(result, quotes.get(key)!, catalog);
+    }
+
     let orderId: string | null = null;
     const create = result.actions.find((action) => action.type === "create_order");
     if (create) {
       try {
-        orderId = await createOrder(db, customer.id, create.items, orderIdempotencyKey(waMessageId));
+        orderId = await createOrder(db, customer.id, create.items, orderIdempotencyKey(waMessageId), create.shipping);
       } catch (error) {
         if (!(error instanceof ProductUnavailableError)) throw error;
         // Produto desativado entre a leitura do catálogo e a RPC: relê o
@@ -212,7 +229,7 @@ async function execute(deps: Deps, customer: Customer, action: Action, advanced:
       await notifyOwner(
         whatsapp,
         deps.ownerPhone,
-        ownerOrderNotice(customer, orderId, cartView(action.items, advanced.catalog)),
+        ownerOrderNotice(customer, orderId, cartView(action.items, advanced.catalog), action.shipping),
       );
       break;
     }
@@ -244,7 +261,7 @@ export async function processInboundMessage(deps: Deps, id: string): Promise<Fin
     conversationId = conversation.id;
 
     // Atendimento humano ativo: o bot não responde (EF-01, etapa 9).
-    const advanced = await advance(db, customer, conversation, toIncomingMessage(payload.message), row.wa_message_id);
+    const advanced = await advance(deps, customer, conversation, toIncomingMessage(payload.message), row.wa_message_id);
     if (!advanced) {
       await finish(db, id, "ignored", conversationId);
       return "ignored";

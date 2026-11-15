@@ -3,6 +3,7 @@
 // atual, e whatsapp.ts converte a tela em mensagem da Cloud API.
 import { type CartLine, MAX_QUANTITY } from "./cart.ts";
 import { type Catalog, type CatalogProduct, formatPrice } from "./catalog-model.ts";
+import { deliveryLabel, formatPostalCode, type ShippingChoice, type ShippingOption } from "./shipping-model.ts";
 
 export interface Option {
   id: string;
@@ -31,10 +32,12 @@ export const OPTION = {
   changeQuantity: "item_quantity",
   confirmOrder: "order_confirm",
   backToCart: "order_back",
+  skipShipping: "ship_skip",
+  otherPostalCode: "ship_postal",
 } as const;
 
 // Prefixos de opções que carregam um identificador do banco.
-export const PREFIX = { category: "cat:", product: "prod:", item: "item:", order: "order:" } as const;
+export const PREFIX = { category: "cat:", product: "prod:", item: "item:", order: "order:", shipping: "ship:" } as const;
 
 // Lista do WhatsApp tem até 10 linhas: 8 itens + "Ver mais" + uma ação.
 export const PAGE_SIZE = 8;
@@ -152,10 +155,47 @@ export function cartItemScreen(item: CartView): Screen {
   };
 }
 
-export function orderConfirmationScreen(items: CartView[]): Screen {
+export function postalCodeScreen(): Screen {
   return {
     kind: "buttons",
-    body: `*Resumo da solicitação*\n\n${cartSummary(items)}\n\n` +
+    body: "Para estimar o frete, digite o *CEP* de entrega (8 números).\n\n" +
+      "Se preferir, siga sem frete: a responsável combina a entrega com você.",
+    options: [
+      { id: OPTION.skipShipping, title: "Seguir sem frete" },
+      { id: OPTION.backToCart, title: "Voltar ao carrinho" },
+    ],
+  };
+}
+
+export function shippingOptionsScreen(options: ShippingOption[], postalCode: string): Screen {
+  const rows: Option[] = options.map((option) => ({
+    id: PREFIX.shipping + option.quoteId,
+    title: option.service,
+    description: `${formatPrice(option.price)} · ${deliveryLabel(option.days)}`,
+  }));
+  rows.push({ id: OPTION.otherPostalCode, title: "Outro CEP" }, { id: OPTION.skipShipping, title: "Seguir sem frete" });
+  return {
+    kind: "list",
+    body: `Fretes para o CEP *${formatPostalCode(postalCode)}*. Preço e prazo são estimativas:`,
+    button: "Fretes",
+    options: rows,
+  };
+}
+
+function shippingSummary(items: CartView[], shipping: ShippingChoice | null): string {
+  if (!shipping) return "";
+  const cep = formatPostalCode(shipping.postalCode);
+  if (!shipping.option) return `\nFrete para o CEP ${cep}: a responsável confirma o valor.`;
+  const { option } = shipping;
+  const subtotal = items.reduce((sum, item) => sum + item.total, 0);
+  return `\nFrete ${option.service} (CEP ${cep}): ${formatPrice(option.price)} · ${deliveryLabel(option.days)}` +
+    `\n*Total estimado: ${formatPrice(subtotal + option.price)}*`;
+}
+
+export function orderConfirmationScreen(items: CartView[], shipping: ShippingChoice | null): Screen {
+  return {
+    kind: "buttons",
+    body: `*Resumo da solicitação*\n\n${cartSummary(items)}${shippingSummary(items, shipping)}\n\n` +
       "O envio não confirma a venda: a responsável vai verificar disponibilidade, frete, prazo e valor final e falar com você por aqui.",
     options: [
       { id: OPTION.confirmOrder, title: "Confirmar envio" },

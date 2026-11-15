@@ -59,6 +59,44 @@ const graph = Deno.serve(
   },
 );
 
+// Melhor Envio falso, na porta de MELHORENVIO_API_URL. A resposta depende do
+// CEP de destino; os pedidos de cotação ficam registrados.
+const POSTAL = { ok: "30140071", error: "99999000", slow: "99999001", none: "99999002" };
+interface QuoteRequest {
+  headers: { authorization: string | null; userAgent: string | null };
+  body: {
+    from: { postal_code: string };
+    to: { postal_code: string };
+    products: { id: string; weight: number; width: number; height: number; length: number; insurance_value: number; quantity: number }[];
+  };
+}
+const quoteRequests: QuoteRequest[] = [];
+const melhorEnvio = Deno.serve(
+  { port: Number(new URL(env.MELHORENVIO_API_URL).port), hostname: "0.0.0.0", onListen: () => {} },
+  async (req) => {
+    const body = (await req.json()) as QuoteRequest["body"];
+    quoteRequests.push({
+      headers: { authorization: req.headers.get("authorization"), userAgent: req.headers.get("user-agent") },
+      body,
+    });
+    switch (body.to.postal_code) {
+      case POSTAL.error:
+        return Response.json({ message: "Server Error" }, { status: 500 });
+      case POSTAL.slow:
+        await new Promise((resolve) => setTimeout(resolve, Number(env.MELHORENVIO_TIMEOUT_MS) + 1500));
+        return Response.json([]);
+      case POSTAL.none:
+        return Response.json([{ id: 1, name: "PAC", error: "Transportadora não atende este trecho.", company: { name: "Correios" } }]);
+      default:
+        return Response.json([
+          { id: 2, name: "SEDEX", price: "38.00", custom_price: "35.00", custom_delivery_time: 2, company: { name: "Correios" } },
+          { id: 3, name: ".Package", error: "Transportadora não atende este trecho.", company: { name: "Jadlog" } },
+          { id: 1, name: "PAC", price: "24.10", custom_price: "22.35", custom_delivery_time: 6, company: { name: "Correios" } },
+        ]);
+    }
+  },
+);
+
 const phones: string[] = [];
 function newPhone() {
   const phone = `55119${String(Math.floor(Math.random() * 1e8)).padStart(8, "0")}`;
@@ -476,21 +514,78 @@ Deno.test({
       });
 
       let orderId = "";
+      let cheapestQuote = "";
 
-      await t.step("confirmação cria o pedido com itens e valores e avisa a responsável", async () => {
+      await t.step("CEP cota o frete com os dados de envio do banco e lista as opções", async () => {
+        const asking = await tap(buyer, "cart_submit");
+        assertEquals(replyIds(asking.replies[0]), ["ship_skip", "order_back"]);
+        assertEquals((await say(buyer, "301400")).replies[0].type, "text");
+
+        const before = quoteRequests.length;
+        const { replies } = await say(buyer, "30140-071");
+        assertEquals(quoteRequests.length, before + 1);
+        const request = quoteRequests.at(-1)!;
+        assertEquals(request.headers, {
+          authorization: `Bearer ${env.MELHORENVIO_ACCESS_TOKEN}`,
+          userAgent: env.MELHORENVIO_USER_AGENT,
+        });
+        assertEquals([request.body.from.postal_code, request.body.to.postal_code], [env.STORE_POSTAL_CODE, POSTAL.ok]);
+        const { data: recipe } = await db
+          .from("products")
+          .select("shipping_weight_kg, shipping_width_cm, shipping_height_cm, shipping_length_cm")
+          .eq("id", SEED.recipeBook)
+          .single();
+        assertEquals(request.body.products.find((p) => p.id === SEED.recipeBook), {
+          id: SEED.recipeBook,
+          width: Number(recipe!.shipping_width_cm),
+          height: Number(recipe!.shipping_height_cm),
+          length: Number(recipe!.shipping_length_cm),
+          weight: Number(recipe!.shipping_weight_kg),
+          insurance_value: 79.9,
+          quantity: 2,
+        });
+
+        const conversation = await conversationOf(buyer);
+        assertEquals(conversation.current_state, "SHIPPING_SELECTION");
+        const { data: quotes } = await db
+          .from("shipping_quotes")
+          .select("id, service_name, price, delivery_days, destination_postal_code, order_id")
+          .eq("conversation_id", conversation.id)
+          .order("price");
+        assertEquals(
+          quotes?.map((q) => [q.service_name, Number(q.price), q.delivery_days, q.destination_postal_code, q.order_id]),
+          [["Correios PAC", 22.35, 6, POSTAL.ok, null], ["Correios SEDEX", 35, 2, POSTAL.ok, null]],
+        );
+        cheapestQuote = quotes![0].id;
+        assertEquals(replyIds(replies[0]), [`ship:${quotes![0].id}`, `ship:${quotes![1].id}`, "ship_postal", "ship_skip"]);
+      });
+
+      await t.step("frete escolhido aparece no resumo com o total estimado", async () => {
+        const { replies } = await tap(buyer, `ship:${cheapestQuote}`);
+        const text = replies[0].interactive?.body.text ?? "";
+        assert(text.includes("Correios PAC") && text.includes("R$ 22,35") && text.includes("R$ 372,05"), text);
+        assertEquals((await conversationOf(buyer)).current_state, "ORDER_CONFIRMATION");
+      });
+
+      await t.step("confirmação cria o pedido com itens, valores e frete e avisa a responsável", async () => {
         const ownerBefore = sentTo(env.OWNER_WHATSAPP_NUMBER).length;
-        await tap(buyer, "cart_submit");
         const { replies } = await tap(buyer, "order_confirm");
 
         const { data: customer } = await db.from("customers").select("id").eq("phone", buyer).single();
         const { data: orders } = await db
           .from("orders")
-          .select("id, status, subtotal, idempotency_key, order_items(product_id, quantity, unit_price_snapshot, product_name_snapshot)")
+          .select("id, status, subtotal, shipping_cost, shipping_service, destination_postal_code, total_estimated, order_items(product_id, quantity, unit_price_snapshot, product_name_snapshot)")
           .eq("customer_id", customer!.id);
         assertEquals(orders?.length, 1);
         const order = orders![0];
         orderId = order.id;
         assertEquals([order.status, Number(order.subtotal)], ["received", 349.7]);
+        assertEquals(
+          [Number(order.shipping_cost), order.shipping_service, order.destination_postal_code, Number(order.total_estimated)],
+          [22.35, "Correios PAC", POSTAL.ok, 372.05],
+        );
+        const { data: quote } = await db.from("shipping_quotes").select("order_id").eq("id", cheapestQuote).single();
+        assertEquals(quote?.order_id, orderId);
         assertEquals(
           order.order_items.map((i) => [i.product_name_snapshot, i.quantity, Number(i.unit_price_snapshot)]).sort(),
           [["Caderno de receitas", 2, 79.9], ["Álbum de casamento", 1, 189.9]].sort(),
@@ -504,6 +599,7 @@ Deno.test({
         const owner = sentTo(env.OWNER_WHATSAPP_NUMBER);
         assertEquals(owner.length, ownerBefore + 1);
         assert(owner.at(-1)?.text?.body.includes("2x Caderno de receitas"));
+        assert(owner.at(-1)?.text?.body.includes("Frete: Correios PAC R$ 22,35 (CEP 30140-071)"));
       });
 
       await t.step("reprocessar a confirmação não duplica o pedido", async () => {
@@ -537,6 +633,7 @@ Deno.test({
         await tap(buyer, "prod_add");
         await say(buyer, "1");
         await tap(buyer, "cart_submit");
+        await tap(buyer, "ship_skip");
         await db.from("products").update({ active: false }).eq("id", SEED.babyAlbum);
         try {
           const { replies } = await tap(buyer, "order_confirm");
@@ -571,6 +668,45 @@ Deno.test({
         assertEquals(foreign.replies[0].text?.body, "Não encontramos esse pedido.");
       });
 
+      const shipper = newPhone();
+
+      await t.step("falha, timeout ou ausência de serviços não impedem a solicitação", async () => {
+        await say(shipper, "1");
+        await tap(shipper, `cat:${SEED.notebooks}`);
+        await tap(shipper, `prod:${SEED.recipeBook}`);
+        await tap(shipper, "prod_add");
+        await say(shipper, "1");
+
+        for (const postal of [POSTAL.error, POSTAL.slow, POSTAL.none]) {
+          await tap(shipper, "cart_submit");
+          const { replies } = await say(shipper, postal);
+          assert(replies[0].text?.body.startsWith("Não conseguimos calcular o frete"), postal);
+          assert(replies[1].interactive?.body.text.includes("a responsável confirma o valor"), postal);
+          assertEquals(replyIds(replies[1]), ["order_confirm", "order_back"]);
+          assertEquals((await conversationOf(shipper)).current_state, "ORDER_CONFIRMATION");
+          if (postal !== POSTAL.none) await tap(shipper, "order_back");
+        }
+        const conversation = await conversationOf(shipper);
+        const { count } = await db
+          .from("shipping_quotes")
+          .select("id", { count: "exact", head: true })
+          .eq("conversation_id", conversation.id);
+        assertEquals(count, 0);
+
+        await tap(shipper, "order_confirm");
+        const { data: customer } = await db.from("customers").select("id").eq("phone", shipper).single();
+        const { data: order } = await db
+          .from("orders")
+          .select("subtotal, shipping_cost, shipping_service, destination_postal_code, total_estimated")
+          .eq("customer_id", customer!.id)
+          .single();
+        assertEquals(
+          [order?.destination_postal_code, order?.shipping_cost, order?.shipping_service, Number(order?.total_estimated)],
+          [POSTAL.none, null, null, 79.9],
+        );
+        assert(sentTo(env.OWNER_WHATSAPP_NUMBER).at(-1)?.text?.body.includes("Frete: não cotado (CEP 99999-002)"));
+      });
+
       await t.step("cliente sem pedidos recebe aviso e o menu", async () => {
         const { replies } = await say(newPhone(), "2");
         assertEquals(replies[0].text?.body, "Você ainda não tem pedidos com este número.");
@@ -580,11 +716,16 @@ Deno.test({
       for (const phone of phones) {
         const { data: customer } = await db.from("customers").select("id").eq("phone", phone).maybeSingle();
         await db.from("whatsapp_inbound_messages").delete().eq("phone", phone);
-        if (customer) await db.from("orders").delete().eq("customer_id", customer.id);
-        if (customer) await db.from("conversations").delete().eq("customer_id", customer.id);
+        if (customer) {
+          const { data: conversation } = await db.from("conversations").select("id").eq("customer_id", customer.id).maybeSingle();
+          if (conversation) await db.from("shipping_quotes").delete().eq("conversation_id", conversation.id);
+          await db.from("orders").delete().eq("customer_id", customer.id);
+          await db.from("conversations").delete().eq("customer_id", customer.id);
+        }
         await db.from("customers").delete().eq("phone", phone);
       }
       await graph.shutdown();
+      await melhorEnvio.shutdown();
     }
   },
 });

@@ -1,8 +1,10 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import type { Catalog } from "../../_shared/catalog-model.ts";
 import { OPTION, PAGE_SIZE, type Screen } from "../../_shared/screens.ts";
+import type { ShippingOption } from "../../_shared/shipping-model.ts";
 import {
   type Action,
+  applyShippingQuote,
   type ConversationContext,
   type ConversationState,
   HANDOFF_OPTION_ID,
@@ -196,9 +198,13 @@ Deno.test("remover o último item volta às categorias", () => {
   assertEquals(result.context, {});
 });
 
-Deno.test("enviar mostra o resumo e só confirmar cria o pedido", () => {
+Deno.test("enviar pede o CEP; seguir sem frete mostra o resumo e só confirmar cria o pedido", () => {
   const cart = [{ product_id: "p1", quantity: 2 }];
-  const summary = step("CART_REVIEW", { cart }, reply(OPTION.submitCart));
+  const asking = step("CART_REVIEW", { cart }, reply(OPTION.submitCart));
+  assertEquals(asking.state, "POSTAL_CODE_INPUT");
+  assertEquals(optionIds(asking.actions), [OPTION.skipShipping, OPTION.backToCart]);
+
+  const summary = step("POSTAL_CODE_INPUT", { cart }, text("1"));
   assertEquals(summary.state, "ORDER_CONFIRMATION");
   assertEquals(optionIds(summary.actions), [OPTION.confirmOrder, OPTION.backToCart]);
 
@@ -209,7 +215,97 @@ Deno.test("enviar mostra o resumo e só confirmar cria o pedido", () => {
   const confirmed = step("ORDER_CONFIRMATION", { cart }, reply(OPTION.confirmOrder));
   assertEquals(confirmed.state, "MAIN_MENU");
   assertEquals(confirmed.context, {});
-  assertEquals(confirmed.actions[0], { type: "create_order", items: cart });
+  assertEquals(confirmed.actions[0], { type: "create_order", items: cart, shipping: null });
+});
+
+Deno.test("CEP inválido explica o formato sem sair do estado", () => {
+  const cart = [{ product_id: "p1", quantity: 1 }];
+  for (const value of ["3014007", "abc", "301400710", "30140-07a"]) {
+    const result = step("POSTAL_CODE_INPUT", { cart }, text(value));
+    assertEquals(result.state, "POSTAL_CODE_INPUT", value);
+    assertEquals(result.context, { cart });
+    assertEquals(texts(result.actions).length, 1);
+    assert(!result.actions.some((a) => a.type === "quote_shipping"));
+  }
+});
+
+Deno.test("CEP válido pede a cotação com o carrinho", () => {
+  const cart = [{ product_id: "p1", quantity: 1 }];
+  const result = step("POSTAL_CODE_INPUT", { cart }, text(" 30140-071 "));
+  assertEquals(result.state, "SHIPPING_SELECTION");
+  assertEquals(result.context, { cart, postalCode: "30140071" });
+  assertEquals(result.actions, [{ type: "quote_shipping", postalCode: "30140071", items: cart }]);
+});
+
+const options: ShippingOption[] = [
+  { quoteId: "q1", service: "Correios PAC", price: 22.35, days: 6 },
+  { quoteId: "q2", service: "Correios SEDEX", price: 35, days: 2 },
+];
+
+Deno.test("cotação com opções lista os fretes; escolher um mostra o total estimado", () => {
+  const cart = [{ product_id: "p1", quantity: 1 }];
+  const quoting = step("POSTAL_CODE_INPUT", { cart }, text("30140071"));
+  const listed = applyShippingQuote(quoting, options, catalog);
+  assertEquals(listed.state, "SHIPPING_SELECTION");
+  assertEquals(optionIds(listed.actions), ["ship:q1", "ship:q2", OPTION.otherPostalCode, OPTION.skipShipping]);
+  const list = screenOf(listed.actions);
+  assert(list.kind === "list" && list.body.includes("30140-071"));
+  assertEquals(list.options[0].description, "R$ 22,35 · 6 dias úteis");
+
+  const chosen = step("SHIPPING_SELECTION", listed.context, reply("ship:q2"));
+  assertEquals(chosen.state, "ORDER_CONFIRMATION");
+  assertEquals(chosen.context, { cart, postalCode: "30140071", shipping: options[1] });
+  const summary = screenOf(chosen.actions);
+  assert(summary.kind === "buttons" && summary.body.includes("R$ 35,00") && summary.body.includes("R$ 194,90"));
+
+  const confirmed = step("ORDER_CONFIRMATION", chosen.context, reply(OPTION.confirmOrder));
+  assertEquals(confirmed.actions[0], {
+    type: "create_order",
+    items: cart,
+    shipping: { postalCode: "30140071", option: options[1] },
+  });
+});
+
+Deno.test("frete que não está na lista é recusado", () => {
+  const context = { cart: [{ product_id: "p1", quantity: 1 }], postalCode: "30140071", shippingOptions: options };
+  const result = step("SHIPPING_SELECTION", context, reply("ship:outra"));
+  assertEquals(result.state, "SHIPPING_SELECTION");
+  assertEquals(optionIds(result.actions)[0], "ship:q1");
+});
+
+Deno.test("'Outro CEP' pede o CEP de novo e 'Seguir sem frete' vai ao resumo sem CEP", () => {
+  const cart = [{ product_id: "p1", quantity: 1 }];
+  const context = { cart, postalCode: "30140071", shippingOptions: options };
+  assertEquals(step("SHIPPING_SELECTION", context, reply(OPTION.otherPostalCode)).state, "POSTAL_CODE_INPUT");
+  const skipped = step("SHIPPING_SELECTION", context, reply(OPTION.skipShipping));
+  assertEquals([skipped.state, skipped.context], ["ORDER_CONFIRMATION", { cart }]);
+});
+
+Deno.test("cotação sem resultado segue ao resumo com o CEP e sem frete cotado", () => {
+  const cart = [{ product_id: "p1", quantity: 1 }];
+  const quoting = step("POSTAL_CODE_INPUT", { cart }, text("30140071"));
+  for (const result of [null, []]) {
+    const next = applyShippingQuote(quoting, result, catalog);
+    assertEquals(next.state, "ORDER_CONFIRMATION");
+    assertEquals(next.context, { cart, postalCode: "30140071" });
+    assertEquals(texts(next.actions).length, 1);
+    const summary = screenOf(next.actions);
+    assert(summary.kind === "buttons" && summary.body.includes("a responsável confirma o valor"));
+  }
+  const confirmed = step("ORDER_CONFIRMATION", { cart, postalCode: "30140071" }, reply(OPTION.confirmOrder));
+  assertEquals(confirmed.actions[0], {
+    type: "create_order",
+    items: cart,
+    shipping: { postalCode: "30140071", option: null },
+  });
+});
+
+Deno.test("item que saiu do catálogo durante o frete volta à revisão do carrinho", () => {
+  const cart = [{ product_id: "p1", quantity: 1 }, { product_id: "fora", quantity: 1 }];
+  const context = { cart, postalCode: "30140071", shippingOptions: options };
+  const result = step("SHIPPING_SELECTION", context, reply("ship:q1"));
+  assertEquals(result.state, "CART_REVIEW");
+  assertEquals(result.context, { cart: [{ product_id: "p1", quantity: 1 }] });
 });
 
 Deno.test("item que saiu do catálogo sai do carrinho e impede a confirmação", () => {
@@ -233,10 +329,6 @@ Deno.test("'menu' ou '0' volta ao menu em qualquer estado e mantém o carrinho",
     assertEquals(result.state, "MAIN_MENU");
     assertEquals(result.context, { cart });
   }
-});
-
-Deno.test("estados da Fase 5 ainda voltam ao menu", () => {
-  assertEquals(step("POSTAL_CODE_INPUT", {}, text("30140071")).state, "MAIN_MENU");
 });
 
 Deno.test("isInactive respeita o limite de 24 horas", () => {

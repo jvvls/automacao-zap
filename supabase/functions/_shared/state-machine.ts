@@ -14,12 +14,21 @@ import {
   OPTION,
   type Option,
   orderConfirmationScreen,
+  postalCodeScreen,
   PREFIX,
   productDetailsScreen,
   productListScreen,
   quantityPromptScreen,
   type Screen,
+  shippingOptionsScreen,
 } from "./screens.ts";
+import {
+  parsePostalCode,
+  readShippingOption,
+  readShippingOptions,
+  type ShippingChoice,
+  type ShippingOption,
+} from "./shipping-model.ts";
 
 export type ConversationState =
   | "MAIN_MENU"
@@ -45,7 +54,9 @@ export type Action =
   | { type: "start_handoff" }
   | { type: "show_orders" }
   | { type: "show_order"; orderId: string }
-  | { type: "create_order"; items: CartLine[] };
+  // O webhook cota e troca a transição pela de applyShippingQuote.
+  | { type: "quote_shipping"; postalCode: string; items: CartLine[] }
+  | { type: "create_order"; items: CartLine[]; shipping: ShippingChoice | null };
 
 export interface Transition {
   state: ConversationState;
@@ -88,6 +99,12 @@ function withCart(cart: CartLine[], fields: ConversationContext = {}): Conversat
   return cart.length ? { cart, ...fields } : { ...fields };
 }
 
+// Frete da confirmação: CEP com a opção escolhida, só o CEP (não cotado) ou nada.
+function readShipping(context: ConversationContext): ShippingChoice | null {
+  const postalCode = str(context.postalCode);
+  return postalCode ? { postalCode, option: readShippingOption(context.shipping) } : null;
+}
+
 // Tela do estado com o contexto dado, ou null se o contexto aponta para algo
 // que saiu do catálogo (categoria, produto ou carrinho vazio).
 function screenFor(state: ConversationState, context: ConversationContext, catalog: Catalog): Screen | null {
@@ -112,8 +129,15 @@ function screenFor(state: ConversationState, context: ConversationContext, catal
       const editing = items.find((item) => item.product.id === str(context.editing));
       return editing ? cartItemScreen(editing) : cartReviewScreen(items);
     }
+    case "POSTAL_CODE_INPUT":
+      return items.length ? postalCodeScreen() : null;
+    case "SHIPPING_SELECTION": {
+      const options = readShippingOptions(context.shippingOptions);
+      const postalCode = str(context.postalCode);
+      return items.length && options.length && postalCode ? shippingOptionsScreen(options, postalCode) : null;
+    }
     case "ORDER_CONFIRMATION":
-      return items.length ? orderConfirmationScreen(items) : null;
+      return items.length ? orderConfirmationScreen(items, readShipping(context)) : null;
     default:
       return mainMenuScreen();
   }
@@ -121,8 +145,13 @@ function screenFor(state: ConversationState, context: ConversationContext, catal
 
 // Volta um nível quando a tela do estado não pode ser montada.
 function fallback(state: ConversationState): ConversationState {
+  if (state === "POSTAL_CODE_INPUT" || state === "SHIPPING_SELECTION") return "CART_REVIEW";
   return state === "CATEGORY_SELECTION" ? "MAIN_MENU" : "CATEGORY_SELECTION";
 }
+
+// Estados depois do carrinho: um item retirado muda o pedido (e o frete
+// cotado para ele), então o cliente revê o carrinho antes de seguir.
+const CHECKOUT_STATES = new Set<ConversationState>(["POSTAL_CODE_INPUT", "SHIPPING_SELECTION", "ORDER_CONFIRMATION"]);
 
 function show(
   state: ConversationState,
@@ -164,8 +193,7 @@ export function transition(
   if (message.kind === "text" && MENU_COMMANDS.has(message.text.trim().toLowerCase())) {
     return show("MAIN_MENU", withCart(cart), catalog, notices);
   }
-  // Com item retirado do catálogo, o cliente revê o carrinho antes de enviar.
-  if (state === "ORDER_CONFIRMATION" && notices.length) {
+  if (CHECKOUT_STATES.has(state) && notices.length) {
     return show("CART_REVIEW", withCart(cart), catalog, notices);
   }
 
@@ -193,6 +221,23 @@ export function transition(
       ...notices,
       { type: "send_text", text: `Adicionado ao carrinho: ${quantity}x ${name}.` },
     ]);
+  }
+
+  // CEP digitado: o webhook cota o frete e completa a transição.
+  if (state === "POSTAL_CODE_INPUT" && message.kind === "text" && !pick(message, screen)) {
+    const postalCode = parsePostalCode(message.text);
+    if (!postalCode) {
+      return {
+        state,
+        context: current,
+        actions: [...notices, { type: "send_text", text: "Não entendi o CEP. Digite os 8 números, por exemplo 30140-071." }],
+      };
+    }
+    return {
+      state: "SHIPPING_SELECTION",
+      context: withCart(cart, { postalCode }),
+      actions: [...notices, { type: "quote_shipping", postalCode, items: cart }],
+    };
   }
 
   const option = pick(message, screen);
@@ -238,7 +283,7 @@ export function transition(
     case "CART_REVIEW": {
       if (!option) return repeat();
       const editing = str(current.editing);
-      if (id === OPTION.submitCart) return go("ORDER_CONFIRMATION");
+      if (id === OPTION.submitCart) return go("POSTAL_CODE_INPUT");
       if (id === OPTION.continueShopping) return go("CATEGORY_SELECTION");
       if (id === OPTION.editCart) return go("CART_REVIEW", { editing: "items" });
       if (id === OPTION.viewCart) return go("CART_REVIEW");
@@ -252,17 +297,51 @@ export function transition(
       return go("QUANTITY_INPUT", { productId: editing, quantityMode: "set" });
     }
 
+    case "POSTAL_CODE_INPUT":
+      if (!option) return repeat();
+      if (id === OPTION.backToCart) return go("CART_REVIEW");
+      return go("ORDER_CONFIRMATION");
+
+    case "SHIPPING_SELECTION": {
+      if (!option) return repeat();
+      if (id === OPTION.otherPostalCode) return go("POSTAL_CODE_INPUT");
+      if (id === OPTION.skipShipping) return go("ORDER_CONFIRMATION");
+      const chosen = readShippingOptions(current.shippingOptions)
+        .find((o) => o.quoteId === id.slice(PREFIX.shipping.length))!;
+      return go("ORDER_CONFIRMATION", { postalCode: current.postalCode, shipping: chosen });
+    }
+
     case "ORDER_CONFIRMATION":
       if (!option) return repeat();
       if (id === OPTION.backToCart) return go("CART_REVIEW");
       return {
         state: "MAIN_MENU",
         context: {},
-        actions: [...notices, { type: "create_order", items: cart }, { type: "send_screen", screen: mainMenuScreen() }],
+        actions: [
+          ...notices,
+          { type: "create_order", items: cart, shipping: readShipping(current) },
+          { type: "send_screen", screen: mainMenuScreen() },
+        ],
       };
 
     default:
-      // POSTAL_CODE_INPUT e SHIPPING_SELECTION entram na Fase 5.
       return go("MAIN_MENU");
   }
+}
+
+const QUOTE_UNAVAILABLE =
+  "Não conseguimos calcular o frete agora. Você pode enviar a solicitação assim mesmo: a responsável confirma o valor com você.";
+
+// Completa a transição de quote_shipping com o resultado da cotação: lista as
+// opções, ou segue para a confirmação com o CEP e sem frete cotado (seção 10.3).
+export function applyShippingQuote(
+  result: Transition,
+  options: ShippingOption[] | null,
+  catalog: Catalog,
+): Transition {
+  const before = result.actions.filter((action) => action.type !== "quote_shipping");
+  if (options?.length) {
+    return show("SHIPPING_SELECTION", { ...result.context, shippingOptions: options }, catalog, before);
+  }
+  return show("ORDER_CONFIRMATION", result.context, catalog, [...before, { type: "send_text", text: QUOTE_UNAVAILABLE }]);
 }
