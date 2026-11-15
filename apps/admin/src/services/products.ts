@@ -87,6 +87,11 @@ export async function setCategoryActive(id: string, active: boolean) {
   if (error) throw error
 }
 
+export async function renameCategory(id: string, name: string) {
+  const { error } = await supabase.from('categories').update({ name }).eq('id', id)
+  if (error) throw error
+}
+
 export async function createCategory(name: string) {
   const { data, error } = await supabase.from('categories').insert({ name }).select().single()
   if (error) throw error

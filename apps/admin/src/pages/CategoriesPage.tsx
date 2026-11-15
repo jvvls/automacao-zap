@@ -3,18 +3,33 @@ import { notifications } from '@mantine/notifications'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { isUniqueViolation } from '../lib/supabaseErrors'
-import { createCategory, listCategories, setCategoryActive } from '../services/products'
+import {
+  createCategory,
+  listCategories,
+  renameCategory,
+  setCategoryActive,
+  type Category,
+} from '../services/products'
 
-export function CategoriesPage() {
+function categoryErrorMessage(error: unknown, action: string) {
+  return isUniqueViolation(error)
+    ? 'Já existe uma categoria com esse nome'
+    : `Não foi possível ${action} a categoria`
+}
+
+function useInvalidateCategories() {
   const queryClient = useQueryClient()
-  const categories = useQuery({ queryKey: ['categories'], queryFn: listCategories })
-  const [name, setName] = useState('')
-
-  const invalidate = () =>
+  return () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: ['categories'] }),
       queryClient.invalidateQueries({ queryKey: ['products'] }),
     ])
+}
+
+export function CategoriesPage() {
+  const invalidate = useInvalidateCategories()
+  const categories = useQuery({ queryKey: ['categories'], queryFn: listCategories })
+  const [name, setName] = useState('')
 
   const add = useMutation({
     mutationFn: (value: string) => createCategory(value),
@@ -22,13 +37,6 @@ export function CategoriesPage() {
       await invalidate()
       setName('')
     },
-  })
-
-  const toggleActive = useMutation({
-    mutationFn: ({ id, active }: { id: string; active: boolean }) => setCategoryActive(id, active),
-    onSuccess: invalidate,
-    onError: () =>
-      notifications.show({ color: 'red', message: 'Não foi possível alterar a categoria.' }),
   })
 
   const trimmed = name.trim()
@@ -54,12 +62,7 @@ export function CategoriesPage() {
             style={{ flex: 1 }}
             value={name}
             onChange={(event) => setName(event.currentTarget.value)}
-            error={
-              add.isError &&
-              (isUniqueViolation(add.error)
-                ? 'Já existe uma categoria com esse nome'
-                : 'Não foi possível cadastrar a categoria')
-            }
+            error={add.isError && categoryErrorMessage(add.error, 'cadastrar')}
           />
           <Button type="submit" disabled={!trimmed} loading={add.isPending}>
             Adicionar
@@ -72,22 +75,87 @@ export function CategoriesPage() {
       {categories.data?.length === 0 && <Text c="dimmed">Nenhuma categoria cadastrada.</Text>}
 
       {categories.data?.map((category) => (
-        <Paper key={category.id} withBorder p="sm" radius="md" data-testid="category-row">
-          <Group justify="space-between" wrap="nowrap">
-            <Text fw={600} truncate>
-              {category.name}
-            </Text>
+        <CategoryRow key={category.id} category={category} />
+      ))}
+    </Stack>
+  )
+}
+
+function CategoryRow({ category }: { category: Category }) {
+  const invalidate = useInvalidateCategories()
+  const [editingName, setEditingName] = useState<string | null>(null)
+
+  const toggleActive = useMutation({
+    mutationFn: (active: boolean) => setCategoryActive(category.id, active),
+    onSuccess: invalidate,
+    onError: () =>
+      notifications.show({ color: 'red', message: 'Não foi possível alterar a categoria.' }),
+  })
+
+  const rename = useMutation({
+    mutationFn: (value: string) => renameCategory(category.id, value),
+    onSuccess: async () => {
+      await invalidate()
+      setEditingName(null)
+    },
+  })
+
+  const trimmed = editingName?.trim() ?? ''
+
+  return (
+    <Paper withBorder p="sm" radius="md" data-testid="category-row">
+      {editingName === null ? (
+        <Group justify="space-between" wrap="nowrap">
+          <Text fw={600} truncate>
+            {category.name}
+          </Text>
+          <Group gap="sm" wrap="nowrap">
+            <Button
+              variant="subtle"
+              size="compact-sm"
+              onClick={() => {
+                rename.reset()
+                setEditingName(category.name)
+              }}
+            >
+              Renomear
+            </Button>
             <Switch
               label={category.active ? 'Ativa' : 'Inativa'}
               checked={category.active}
               disabled={toggleActive.isPending}
-              onChange={(event) =>
-                toggleActive.mutate({ id: category.id, active: event.currentTarget.checked })
-              }
+              onChange={(event) => toggleActive.mutate(event.currentTarget.checked)}
             />
           </Group>
-        </Paper>
-      ))}
-    </Stack>
+        </Group>
+      ) : (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (trimmed === category.name) setEditingName(null)
+            else if (trimmed) rename.mutate(trimmed)
+          }}
+        >
+          <Stack gap="xs">
+            <TextInput
+              aria-label="Nome da categoria"
+              maxLength={100}
+              autoFocus
+              value={editingName}
+              onChange={(event) => setEditingName(event.currentTarget.value)}
+              error={rename.isError && categoryErrorMessage(rename.error, 'renomear')}
+            />
+            <Group gap="xs" justify="flex-end">
+              <Button variant="subtle" color="gray" size="compact-sm" onClick={() => setEditingName(null)}>
+                Cancelar
+              </Button>
+              <Button type="submit" size="compact-sm" disabled={!trimmed} loading={rename.isPending}>
+                Salvar
+              </Button>
+            </Group>
+          </Stack>
+        </form>
+      )}
+    </Paper>
   )
 }
