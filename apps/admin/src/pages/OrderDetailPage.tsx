@@ -83,8 +83,8 @@ export function OrderDetailPage() {
         <Title order={4} mb="sm">
           Produtos
         </Title>
-        <Table.ScrollContainer minWidth={360}>
-          <Table>
+        <Table.ScrollContainer minWidth={300}>
+          <Table fz="sm" horizontalSpacing={6}>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Produto</Table.Th>
