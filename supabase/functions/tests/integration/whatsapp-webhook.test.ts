@@ -105,7 +105,7 @@ async function waitForInbound(waMessageId: string) {
   for (let i = 0; i < 50; i++) {
     const { data } = await db
       .from("whatsapp_inbound_messages")
-      .select("status, error, conversation_id, attempts")
+      .select("id, status, error, conversation_id, attempts")
       .eq("wa_message_id", waMessageId)
       .maybeSingle();
     if (data && data.status !== "received") return data;
@@ -122,6 +122,20 @@ async function conversationOf(phone: string) {
     .single();
   if (error) throw error;
   return data;
+}
+
+async function reprocess(body?: unknown, token = SERVICE_KEY) {
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/reprocess-inbound`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    return { status: response.status, results: [] };
+  }
+  const { results } = (await response.json()) as { results: { id: string; status: string }[] };
+  return { status: response.status, results };
 }
 
 function sentTo(phone: string) {
@@ -299,6 +313,69 @@ Deno.test({
         assert(saved, "primeira gravação deveria passar");
         assertEquals(await saveConversation(db, stale, { context: { versao: 2 } }), null);
         assertEquals((await conversationOf(phone)).context, { versao: 1 });
+      });
+
+      await t.step("reprocessamento exige a credencial de serviço", async () => {
+        assertEquals((await reprocess(undefined, "chave-errada")).status, 401);
+        const noAuth = await fetch(`${SUPABASE_URL}/functions/v1/reprocess-inbound`, { method: "POST" });
+        await noAuth.body?.cancel();
+        assertEquals(noAuth.status, 401);
+      });
+
+      await t.step("mensagem failed é reprocessada por id depois da falha corrigida", async () => {
+        const other = newPhone();
+        failingRecipients.add(other);
+        const { id, body } = event(other, { type: "text", text: { body: "oi" } });
+        try {
+          await post(body);
+          assertEquals((await waitForInbound(id)).status, "failed");
+        } finally {
+          failingRecipients.delete(other);
+        }
+        const inbound = await waitForInbound(id);
+
+        const { status, results } = await reprocess({ ids: [inbound.id] });
+        assertEquals([status, results], [200, [{ id: inbound.id, status: "processed" }]]);
+        const after = await waitForInbound(id);
+        assertEquals([after.status, after.attempts, after.error], ["processed", 2, null]);
+        assertEquals(sentTo(other).at(-1)?.type, "interactive");
+      });
+
+      await t.step("seleção automática pega a presa em received e deixa a recente", async () => {
+        const other = newPhone();
+        const message = (waId: string) => ({
+          contact: { profile: { name: "Presa" }, wa_id: other },
+          message: { from: other, id: waId, timestamp: "1763208000", type: "text", text: { body: "oi" } },
+        });
+        const stuckId = `wamid.test.${crypto.randomUUID()}`;
+        const freshId = `wamid.test.${crypto.randomUUID()}`;
+        const { data: rows, error } = await db
+          .from("whatsapp_inbound_messages")
+          .insert([
+            {
+              wa_message_id: stuckId,
+              phone: other,
+              payload: message(stuckId),
+              received_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+            },
+            // Insert em lote manda null para coluna ausente; received_at explícito.
+            { wa_message_id: freshId, phone: other, payload: message(freshId), received_at: new Date().toISOString() },
+          ])
+          .select("id, wa_message_id");
+        if (error) throw error;
+        const stuck = rows.find((r) => r.wa_message_id === stuckId)!;
+        const fresh = rows.find((r) => r.wa_message_id === freshId)!;
+
+        const { results } = await reprocess();
+        assert(results.some((r) => r.id === stuck.id && r.status === "processed"), JSON.stringify(results));
+        assert(!results.some((r) => r.id === fresh.id));
+        assertEquals((await waitForInbound(stuckId)).status, "processed");
+        const { data: freshRow } = await db
+          .from("whatsapp_inbound_messages")
+          .select("status")
+          .eq("id", fresh.id)
+          .single();
+        assertEquals(freshRow?.status, "received");
       });
     } finally {
       for (const phone of phones) {
