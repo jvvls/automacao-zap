@@ -28,7 +28,18 @@ interface SentMessage {
   to: string;
   type: string;
   text?: { body: string };
-  interactive?: { action: { buttons: { reply: { id: string } }[] } };
+  interactive?: {
+    type: string;
+    header?: { type: string; image: { link: string } };
+    body: { text: string };
+    action: { buttons?: { reply: { id: string } }[]; sections?: { rows: { id: string }[] }[] };
+  };
+}
+
+// Ids dos botões ou das linhas da lista de uma mensagem enviada.
+function replyIds(message: SentMessage | undefined): string[] {
+  const action = message?.interactive?.action;
+  return action?.buttons?.map((b) => b.reply.id) ?? action?.sections?.[0].rows.map((r) => r.id) ?? [];
 }
 
 const sent: SentMessage[] = [];
@@ -142,6 +153,38 @@ function sentTo(phone: string) {
   return sent.filter((m) => m.to === phone);
 }
 
+// Envia uma mensagem do cliente, espera o processamento e devolve o que o bot
+// respondeu a ela.
+async function converse(phone: string, message: Record<string, unknown>) {
+  const before = sentTo(phone).length;
+  const { id, body } = event(phone, message);
+  assertEquals(await post(body), 200);
+  const inbound = await waitForInbound(id);
+  assertEquals(inbound.status, "processed", inbound.error ?? undefined);
+  return { id, inbound, replies: sentTo(phone).slice(before) };
+}
+
+const say = (phone: string, text: string) => converse(phone, { type: "text", text: { body: text } });
+const tap = (phone: string, id: string) =>
+  converse(phone, {
+    type: "interactive",
+    interactive: id.includes(":")
+      ? { type: "list_reply", list_reply: { id, title: "" } }
+      : { type: "button_reply", button_reply: { id, title: "" } },
+  });
+
+// Dados do seed (supabase/seed.sql).
+const SEED = {
+  albums: "c0000000-0000-0000-0000-000000000001",
+  notebooks: "c0000000-0000-0000-0000-000000000002",
+  inactiveCategory: "c0000000-0000-0000-0000-000000000003",
+  weddingAlbum: "d0000000-0000-0000-0000-000000000001",
+  babyAlbum: "d0000000-0000-0000-0000-000000000002",
+  recipeBook: "d0000000-0000-0000-0000-000000000003",
+  inactiveProduct: "d0000000-0000-0000-0000-000000000004",
+  seedOrderCustomer: "e0000000-0000-0000-0000-000000000001",
+};
+
 Deno.test({
   name: "webhook do WhatsApp",
   sanitizeOps: false,
@@ -197,7 +240,7 @@ Deno.test({
         const replies = sentTo(phone);
         assertEquals(replies.length, 1);
         assertEquals(replies[0].type, "interactive");
-        assertEquals(replies[0].interactive?.action.buttons[0].reply.id, "menu_handoff");
+        assertEquals(replyIds(replies[0]), ["menu_catalog", "menu_orders", "menu_handoff"]);
       });
 
       await t.step("mensagem reenviada pela Meta não é processada duas vezes", async () => {
@@ -260,7 +303,7 @@ Deno.test({
         const other = newPhone();
         failingRecipients.add(env.OWNER_WHATSAPP_NUMBER);
         try {
-          const { id, body } = event(other, { type: "text", text: { body: "1" } });
+          const { id, body } = event(other, { type: "text", text: { body: "3" } });
           await post(body);
           assertEquals((await waitForInbound(id)).status, "processed");
           assertEquals((await conversationOf(other)).human_handoff, true);
@@ -377,10 +420,167 @@ Deno.test({
           .single();
         assertEquals(freshRow?.status, "received");
       });
+
+      const buyer = newPhone();
+
+      await t.step("catálogo lista só categorias ativas com produtos ativos", async () => {
+        const { replies } = await say(buyer, "1");
+        assertEquals((await conversationOf(buyer)).current_state, "CATEGORY_SELECTION");
+        assertEquals(replies.length, 1);
+        assertEquals(replies[0].interactive?.type, "list");
+        assertEquals(replyIds(replies[0]), [`cat:${SEED.albums}`, `cat:${SEED.notebooks}`]);
+      });
+
+      await t.step("categoria lista os produtos ativos e o produto mostra foto e preço", async () => {
+        const products = await tap(buyer, `cat:${SEED.notebooks}`);
+        assertEquals(replyIds(products.replies[0]), [`prod:${SEED.recipeBook}`, "back_categories"]);
+
+        // Foto cadastrada só neste teste, para conferir o cabeçalho de imagem.
+        await db.from("products").update({ image_path: "teste/receitas.jpg" }).eq("id", SEED.recipeBook);
+        try {
+          const details = await tap(buyer, `prod:${SEED.recipeBook}`);
+          const message = details.replies[0];
+          assertEquals(message.interactive?.header?.type, "image");
+          assert(message.interactive?.header?.image.link.endsWith("/product-images/teste/receitas.jpg"));
+          assert(message.interactive?.body.text.includes("R$ 79,90"));
+        } finally {
+          await db.from("products").update({ image_path: null }).eq("id", SEED.recipeBook);
+        }
+        assertEquals((await conversationOf(buyer)).current_state, "PRODUCT_DETAILS");
+      });
+
+      await t.step("quantidade inválida é recusada sem alterar o carrinho", async () => {
+        await tap(buyer, "prod_add");
+        const { replies } = await say(buyer, "dez");
+        assertEquals(replies[0].type, "text");
+        const conversation = await conversationOf(buyer);
+        assertEquals(conversation.current_state, "QUANTITY_INPUT");
+        assertEquals((conversation.context as { cart?: unknown }).cart, undefined);
+      });
+
+      await t.step("carrinho com vários itens soma os valores do banco", async () => {
+        await say(buyer, "2");
+        await tap(buyer, "cart_continue");
+        await tap(buyer, `cat:${SEED.albums}`);
+        await tap(buyer, `prod:${SEED.weddingAlbum}`);
+        await tap(buyer, "prod_add");
+        const { replies } = await say(buyer, "1");
+        const review = replies.at(-1)!;
+        assert(review.interactive?.body.text.includes("R$ 349,70"), review.interactive?.body.text);
+        const conversation = await conversationOf(buyer);
+        assertEquals(conversation.current_state, "CART_REVIEW");
+        assertEquals((conversation.context as { cart: unknown }).cart, [
+          { product_id: SEED.recipeBook, quantity: 2 },
+          { product_id: SEED.weddingAlbum, quantity: 1 },
+        ]);
+      });
+
+      let orderId = "";
+
+      await t.step("confirmação cria o pedido com itens e valores e avisa a responsável", async () => {
+        const ownerBefore = sentTo(env.OWNER_WHATSAPP_NUMBER).length;
+        await tap(buyer, "cart_submit");
+        const { replies } = await tap(buyer, "order_confirm");
+
+        const { data: customer } = await db.from("customers").select("id").eq("phone", buyer).single();
+        const { data: orders } = await db
+          .from("orders")
+          .select("id, status, subtotal, idempotency_key, order_items(product_id, quantity, unit_price_snapshot, product_name_snapshot)")
+          .eq("customer_id", customer!.id);
+        assertEquals(orders?.length, 1);
+        const order = orders![0];
+        orderId = order.id;
+        assertEquals([order.status, Number(order.subtotal)], ["received", 349.7]);
+        assertEquals(
+          order.order_items.map((i) => [i.product_name_snapshot, i.quantity, Number(i.unit_price_snapshot)]).sort(),
+          [["Caderno de receitas", 2, 79.9], ["Álbum de casamento", 1, 189.9]].sort(),
+        );
+
+        assert(replies[0].text?.body.includes(orderId.slice(0, 8).toUpperCase()));
+        assertEquals(replyIds(replies.at(-1)), ["menu_catalog", "menu_orders", "menu_handoff"]);
+        const conversation = await conversationOf(buyer);
+        assertEquals([conversation.current_state, conversation.context], ["MAIN_MENU", {}]);
+
+        const owner = sentTo(env.OWNER_WHATSAPP_NUMBER);
+        assertEquals(owner.length, ownerBefore + 1);
+        assert(owner.at(-1)?.text?.body.includes("2x Caderno de receitas"));
+      });
+
+      await t.step("reprocessar a confirmação não duplica o pedido", async () => {
+        const { data: customer } = await db.from("customers").select("id").eq("phone", buyer).single();
+        const { data: conversation } = await db.from("conversations").select("id").eq("customer_id", customer!.id).single();
+        // Simula a falha depois da RPC e antes de gravar a conversa: volta ao
+        // estado de confirmação com o mesmo carrinho e reprocessa a mensagem.
+        const { data: confirm } = await db
+          .from("whatsapp_inbound_messages")
+          .select("id, payload")
+          .eq("phone", buyer)
+          .order("received_at", { ascending: false })
+          .limit(1)
+          .single();
+        await db.from("conversations").update({
+          current_state: "ORDER_CONFIRMATION",
+          context: { cart: [{ product_id: SEED.recipeBook, quantity: 2 }, { product_id: SEED.weddingAlbum, quantity: 1 }] },
+        }).eq("id", conversation!.id);
+        await db.from("whatsapp_inbound_messages").update({ status: "failed" }).eq("id", confirm!.id);
+
+        const { results } = await reprocess({ ids: [confirm!.id] });
+        assertEquals(results, [{ id: confirm!.id, status: "processed" }]);
+        const { count } = await db.from("orders").select("id", { count: "exact", head: true }).eq("customer_id", customer!.id);
+        assertEquals(count, 1);
+      });
+
+      await t.step("produto desativado sai do carrinho antes do envio", async () => {
+        await say(buyer, "1");
+        await tap(buyer, `cat:${SEED.albums}`);
+        await tap(buyer, `prod:${SEED.babyAlbum}`);
+        await tap(buyer, "prod_add");
+        await say(buyer, "1");
+        await tap(buyer, "cart_submit");
+        await db.from("products").update({ active: false }).eq("id", SEED.babyAlbum);
+        try {
+          const { replies } = await tap(buyer, "order_confirm");
+          assertEquals(replies[0].type, "text");
+          // Carrinho vazio depois da remoção: volta às categorias.
+          assertEquals((await conversationOf(buyer)).current_state, "CATEGORY_SELECTION");
+          const { data: customer } = await db.from("customers").select("id").eq("phone", buyer).single();
+          const { count } = await db.from("orders").select("id", { count: "exact", head: true }).eq("customer_id", customer!.id);
+          assertEquals(count, 1);
+        } finally {
+          await db.from("products").update({ active: true }).eq("id", SEED.babyAlbum);
+        }
+      });
+
+      await t.step("consulta de pedidos mostra só os pedidos do próprio cliente", async () => {
+        await say(buyer, "menu");
+        const list = await say(buyer, "2");
+        assertEquals(replyIds(list.replies[0]), [`order:${orderId}`]);
+
+        const details = await tap(buyer, `order:${orderId}`);
+        assert(details.replies[0].text?.body.includes("Recebido"));
+        assert(details.replies[0].text?.body.includes("R$ 349,70"));
+
+        // Pedido do seed pertence a outro cliente.
+        const { data: other } = await db
+          .from("orders")
+          .select("id")
+          .eq("customer_id", SEED.seedOrderCustomer)
+          .limit(1)
+          .single();
+        const foreign = await tap(buyer, `order:${other!.id}`);
+        assertEquals(foreign.replies[0].text?.body, "Não encontramos esse pedido.");
+      });
+
+      await t.step("cliente sem pedidos recebe aviso e o menu", async () => {
+        const { replies } = await say(newPhone(), "2");
+        assertEquals(replies[0].text?.body, "Você ainda não tem pedidos com este número.");
+        assertEquals(replyIds(replies[1]), ["menu_catalog", "menu_orders", "menu_handoff"]);
+      });
     } finally {
       for (const phone of phones) {
         const { data: customer } = await db.from("customers").select("id").eq("phone", phone).maybeSingle();
         await db.from("whatsapp_inbound_messages").delete().eq("phone", phone);
+        if (customer) await db.from("orders").delete().eq("customer_id", customer.id);
         if (customer) await db.from("conversations").delete().eq("customer_id", customer.id);
         await db.from("customers").delete().eq("phone", phone);
       }
