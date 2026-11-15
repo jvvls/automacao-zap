@@ -391,7 +391,7 @@ Armazena os produtos disponíveis.
 | `category_id`        | UUID          | FK para `categories.id`, NOT NULL |
 | `name`               | VARCHAR(150)  | NOT NULL                       |
 | `description`        | TEXT          | Opcional                       |
-| `base_price`         | NUMERIC(10,2) | NOT NULL, \>= 0                |
+| `base_price`         | NUMERIC(10,2) | NOT NULL, \> 0                 |
 | `image_path`         | TEXT          | Caminho do arquivo no Storage  |
 | `shipping_weight_kg` | NUMERIC(8,3)  | NOT NULL, \> 0                 |
 | `shipping_width_cm`  | NUMERIC(8,2)  | NOT NULL, \> 0                 |

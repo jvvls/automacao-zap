@@ -1,5 +1,5 @@
 // Regras do formulário de produto (seções 5.2 e 6.2). Espelham os CHECKs do
-// banco: preço >= 0, peso e dimensões > 0, e os limites de NUMERIC(p,s).
+// banco: preço, peso e dimensões > 0, e os limites de NUMERIC(p,s).
 
 export const IMAGE_TYPES = ['image/jpeg', 'image/png']
 export const IMAGE_MAX_BYTES = 5 * 1024 * 1024 // igual ao bucket product-images
@@ -37,7 +37,7 @@ export const productValidation = {
     return null
   },
   category_id: (value: string | null) => (value ? null : 'Selecione a categoria'),
-  base_price: numberRule({ allowZero: true, max: 99_999_999.99 }),
+  base_price: numberRule({ allowZero: false, max: 99_999_999.99 }),
   shipping_weight_kg: numberRule({ allowZero: false, max: 99_999.999 }),
   shipping_width_cm: numberRule({ allowZero: false, max: 999_999.99 }),
   shipping_height_cm: numberRule({ allowZero: false, max: 999_999.99 }),

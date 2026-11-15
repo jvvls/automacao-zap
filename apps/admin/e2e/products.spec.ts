@@ -57,6 +57,16 @@ test('bloqueia dados logísticos inválidos', async ({ page }) => {
   await expect(page).toHaveURL(/\/produtos\/novo$/)
 })
 
+test('bloqueia preço zero', async ({ page }) => {
+  await page.getByRole('link', { name: 'Novo produto' }).click()
+  await fillProduct(page, uniqueName('Produto grátis'))
+  await page.getByLabel('Preço').fill('0')
+  await page.getByRole('button', { name: 'Salvar' }).click()
+
+  await expect(page.getByText('Deve ser maior que zero')).toBeVisible()
+  await expect(page).toHaveURL(/\/produtos\/novo$/)
+})
+
 test('edita produto', async ({ page }) => {
   const name = uniqueName('Produto editável')
   await createProduct(page, name)

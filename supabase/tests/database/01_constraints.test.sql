@@ -1,5 +1,5 @@
 begin;
-select plan(14);
+select plan(15);
 
 insert into public.categories (id, name) values ('10000000-0000-0000-0000-000000000001', 'Teste constraints');
 
@@ -8,6 +8,11 @@ prepare negative_price as
   insert into public.products (category_id, name, base_price, shipping_weight_kg, shipping_width_cm, shipping_height_cm, shipping_length_cm)
   values ('10000000-0000-0000-0000-000000000001', 'x', -1, 1, 1, 1, 1);
 select throws_ok('negative_price', '23514', null, 'produto não aceita preço negativo');
+
+prepare zero_price as
+  insert into public.products (category_id, name, base_price, shipping_weight_kg, shipping_width_cm, shipping_height_cm, shipping_length_cm)
+  values ('10000000-0000-0000-0000-000000000001', 'x', 0, 1, 1, 1, 1);
+select throws_ok('zero_price', '23514', null, 'produto não aceita preço zero');
 
 prepare zero_weight as
   insert into public.products (category_id, name, base_price, shipping_weight_kg, shipping_width_cm, shipping_height_cm, shipping_length_cm)
