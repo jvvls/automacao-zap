@@ -25,11 +25,14 @@ dúvida, siga a [documentação oficial](https://developers.facebook.com/docs/wh
 | `WHATSAPP_VERIFY_TOKEN`    | Texto aleatório escolhido por vocês (ex.: `openssl rand -hex 24`).        |
 | `OWNER_WHATSAPP_NUMBER`    | Número pessoal da responsável, só dígitos com DDI (ex.: `5511999998888`). |
 
-> Até a Fase 4 o aviso à responsável é texto simples. A Meta só entrega texto
-> livre dentro da janela de 24 horas, então o aviso chega apenas se a
-> responsável tiver mandado mensagem ao número da loja nas últimas 24 horas.
-> Quando não chega, o erro fica no log da função e o cliente é atendido
-> normalmente.
+> O aviso que vale é o do painel: os itens **Pedidos** e **Atendimento** do
+> menu mostram, em tempo real, quantos pedidos estão em "Recebido" e quantas
+> conversas esperam atendimento (no celular, um ponto no botão de menu).
+> O texto por WhatsApp à responsável é só uma tentativa extra, sem template:
+> a Meta só entrega texto livre dentro da janela de 24 horas, então ele chega
+> apenas se a responsável tiver mandado mensagem ao número da loja nas
+> últimas 24 horas. Quando não chega, o erro fica no log da função e o
+> cliente é atendido normalmente.
 
 ## 3. Segredos e deploy no Supabase
 

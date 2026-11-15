@@ -895,6 +895,12 @@ Meta exige template aprovado; portanto, criar um template simples de
 "nova solicitação" / "cliente pediu atendimento". Como alternativa ou
 complemento, a notificação pode ser enviada por e-mail.
 
+**Decisão da Fase 4:** sem template. O aviso é feito no painel: os itens
+Pedidos e Atendimento do menu mostram, em tempo real (Supabase Realtime
+sobre `orders` e `conversations`, sujeito a RLS), quantos pedidos estão em
+`received` e quantas conversas têm `human_handoff = true`. O texto por
+WhatsApp continua como tentativa, sem bloquear o atendimento.
+
 ## 8. Máquina de estados da conversa
 
 Estados mínimos:

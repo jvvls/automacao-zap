@@ -41,7 +41,7 @@ Usuário administrativo do seed local: `admin@scrapbook.local` / `admin123456`.
 O Deno vem do `package.json` da raiz (`npm install` uma vez).
 
 ```sh
-npm run test:functions             # unitários: máquina de estados e formatos da Meta
+npm run test:functions             # unitários: máquina de estados, carrinho e formatos da Meta
 
 # integrado: webhook servido com segredos falsos e uma Graph API falsa na porta 54400
 npx supabase functions serve --env-file supabase/functions/.env.test
