@@ -19,7 +19,7 @@ import {
   transition,
   type Transition,
 } from "./state-machine.ts";
-import type { Db } from "./supabase.ts";
+import { createServiceClient, type Db, requireEnv } from "./supabase.ts";
 import {
   buttonsMessage,
   contactName,
@@ -43,7 +43,40 @@ export interface Deps {
   ownerPhone: string;
 }
 
+export function depsFromEnv(): Deps {
+  return {
+    db: createServiceClient(),
+    whatsapp: {
+      accessToken: requireEnv("WHATSAPP_ACCESS_TOKEN"),
+      phoneNumberId: requireEnv("WHATSAPP_PHONE_NUMBER_ID"),
+      graphUrl: Deno.env.get("WHATSAPP_GRAPH_URL") ?? "https://graph.facebook.com",
+    },
+    ownerPhone: requireEnv("OWNER_WHATSAPP_NUMBER"),
+  };
+}
+
 type FinalStatus = "processed" | "ignored" | "failed";
+
+// Mensagem em `received` há mais que isso teve a execução interrompida (seção 5.9).
+export const STUCK_AFTER_MS = 5 * 60 * 1000;
+// Na seleção automática, desiste de mensagens que já falharam tantas vezes;
+// por id, ainda podem ser reprocessadas.
+export const MAX_AUTO_ATTEMPTS = 5;
+const REPROCESS_BATCH = 20;
+
+// Mensagens `failed` ou presas em `received`, das mais antigas para as mais novas.
+export async function findReprocessable(db: Db, now: Date): Promise<string[]> {
+  const stuckBefore = new Date(now.getTime() - STUCK_AFTER_MS).toISOString();
+  const { data, error } = await db
+    .from("whatsapp_inbound_messages")
+    .select("id")
+    .or(`status.eq.failed,and(status.eq.received,received_at.lt.${stuckBefore})`)
+    .lt("attempts", MAX_AUTO_ATTEMPTS)
+    .order("received_at")
+    .limit(REPROCESS_BATCH);
+  if (error) throw error;
+  return data.map((row) => row.id);
+}
 
 // Insere as mensagens ignorando as já recebidas e devolve só os ids novos.
 export async function recordInbound(db: Db, messages: InboundMessage[]): Promise<string[]> {

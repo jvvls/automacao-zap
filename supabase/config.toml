@@ -442,3 +442,10 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/whatsapp-webhook/deno.json"
 entrypoint = "./functions/whatsapp-webhook/index.ts"
+
+# A própria função exige a credencial de serviço no Authorization.
+[functions.reprocess-inbound]
+enabled = true
+verify_jwt = false
+import_map = "./functions/reprocess-inbound/deno.json"
+entrypoint = "./functions/reprocess-inbound/index.ts"

@@ -1,7 +1,7 @@
 // EF-01 — entrada de eventos da WhatsApp Cloud API (seção 7).
 // Publicada sem verificação de JWT: a autenticidade vem da assinatura da Meta.
-import { type Deps, processInboundMessage, recordInbound } from "../_shared/inbound.ts";
-import { createServiceClient, requireEnv } from "../_shared/supabase.ts";
+import { type Deps, depsFromEnv, processInboundMessage, recordInbound } from "../_shared/inbound.ts";
+import { requireEnv } from "../_shared/supabase.ts";
 import { extractInboundMessages, verifySignature } from "../_shared/whatsapp.ts";
 
 // Global do Supabase Edge Runtime; os tipos de @supabase/functions-js não
@@ -52,15 +52,7 @@ Deno.serve(async (req) => {
     const messages = extractInboundMessages(body);
     if (messages.length === 0) return new Response("ok", { status: 200 });
 
-    const deps: Deps = {
-      db: createServiceClient(),
-      whatsapp: {
-        accessToken: requireEnv("WHATSAPP_ACCESS_TOKEN"),
-        phoneNumberId: requireEnv("WHATSAPP_PHONE_NUMBER_ID"),
-        graphUrl: Deno.env.get("WHATSAPP_GRAPH_URL") ?? "https://graph.facebook.com",
-      },
-      ownerPhone: requireEnv("OWNER_WHATSAPP_NUMBER"),
-    };
+    const deps = depsFromEnv();
 
     // Se o registro falhar, responde 500 e a Meta reenvia o evento.
     const ids = await recordInbound(deps.db, messages);
