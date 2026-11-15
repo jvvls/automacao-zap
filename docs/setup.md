@@ -60,6 +60,24 @@ JWT do Supabase, e a função rejeita qualquer `POST` sem assinatura
 - **Mensagens:** `whatsapp_inbound_messages.status` — `processed`, `ignored`
   (conversa em atendimento humano), `failed` (com `error`) ou `received`
   (execução interrompida; seção 5.9).
+- **Reprocessamento:** depois de corrigir a causa de uma falha, chamar a função
+  `reprocess-inbound` com a credencial de serviço (`service_role`, em Project
+  Settings → API Keys). Ela só aceita essa chave; a chave pública leva `401`.
+
+  ```sh
+  # Seleção automática: até 20 mensagens `failed` ou presas em `received` há
+  # mais de 5 minutos, com menos de 5 tentativas.
+  curl -X POST https://sgaedwkfxizcotdlaxjx.supabase.co/functions/v1/reprocess-inbound \
+    -H "Authorization: Bearer $SERVICE_ROLE_KEY"
+
+  # Mensagens específicas (ids de whatsapp_inbound_messages), mesmo acima do
+  # limite de tentativas:
+  curl -X POST https://sgaedwkfxizcotdlaxjx.supabase.co/functions/v1/reprocess-inbound \
+    -H "Authorization: Bearer $SERVICE_ROLE_KEY" -d '{"ids": ["<uuid>"]}'
+  ```
+
+  A resposta lista o status final de cada mensagem. Publicar junto com o
+  webhook: `npx supabase functions deploy reprocess-inbound --project-ref sgaedwkfxizcotdlaxjx`.
 - **Atendimento humano:** a tela *Atendimento* do painel lista as conversas com
   o bot pausado e permite reativá-lo.
 

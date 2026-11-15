@@ -13,7 +13,8 @@ Configuração do WhatsApp: [`docs/setup.md`](docs/setup.md).
 
 ## Ambiente local
 
-Requer Node 22+ e Docker. A CLI do Supabase roda via `npx supabase`.
+Requer Node 22+ e Docker. A CLI do Supabase roda via `npx supabase`, na versão
+fixada no `package.json` da raiz (`npm install` na raiz uma vez).
 
 > Numa distrobox, rode a CLI do Supabase no **host**, com o Docker real
 > primeiro no PATH (`PATH=/usr/bin:$PATH npx supabase start`). Pelo shim
