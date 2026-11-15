@@ -1192,6 +1192,8 @@ Tarefas:
 -   Implementar persistência de conversa com controle de concorrência.
 -   Criar menu principal.
 -   Implementar transferência para atendimento humano.
+-   Reativar o bot pelo painel (`conversations.human_handoff`, seção
+    4.4).
 
 **Critério de aceite:** mensagem recebida no WhatsApp chega à Edge
 Function, é associada ao cliente e recebe uma resposta correta; a
