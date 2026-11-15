@@ -2,6 +2,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   buttonsMessage,
   extractInboundMessages,
+  screenMessage,
   textMessage,
   toIncomingMessage,
   verifySignature,
@@ -108,4 +109,46 @@ Deno.test("monta mensagens de texto e de botões", () => {
       action: { buttons: [{ type: "reply", reply: { id: "x", title: "X" } }] },
     },
   });
+});
+
+Deno.test("tela vira lista ou botões com as opções numeradas e os limites da Meta", () => {
+  const list = screenMessage("5511", {
+    kind: "list",
+    body: "Escolha:",
+    button: "Produtos",
+    options: [{ id: "prod:1", title: "Álbum de casamento artesanal grande", description: "R$ 189,90" }],
+  });
+  assertEquals(list, {
+    messaging_product: "whatsapp",
+    to: "5511",
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text: "Escolha:\n\n_Se preferir, responda com o número:_\n1. Álbum de casamento artesanal grande" },
+      action: {
+        button: "Produtos",
+        sections: [{ rows: [{ id: "prod:1", title: "Álbum de casamento arte…", description: "R$ 189,90" }] }],
+      },
+    },
+  });
+
+  const buttons = screenMessage("5511", {
+    kind: "buttons",
+    body: "Detalhe",
+    options: [{ id: "prod_add", title: "Adicionar" }],
+    imagePath: "p.jpg",
+  }, "https://exemplo/p.jpg");
+  assertEquals(buttons, {
+    messaging_product: "whatsapp",
+    to: "5511",
+    type: "interactive",
+    interactive: {
+      type: "button",
+      header: { type: "image", image: { link: "https://exemplo/p.jpg" } },
+      body: { text: "Detalhe\n\n_Se preferir, responda com o número:_\n1. Adicionar" },
+      action: { buttons: [{ type: "reply", reply: { id: "prod_add", title: "Adicionar" } }] },
+    },
+  });
+
+  assertEquals(screenMessage("5511", { kind: "text", body: "Quantas?" }), textMessage("5511", "Quantas?"));
 });

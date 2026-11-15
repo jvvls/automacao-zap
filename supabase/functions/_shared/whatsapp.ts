@@ -1,6 +1,7 @@
 // Integração com a WhatsApp Cloud API (seção 9): verificação da assinatura,
 // leitura dos eventos do webhook e envio de mensagens.
 import type { Json as JsonValue } from "./database.types.ts";
+import type { Option, Screen } from "./screens.ts";
 import type { IncomingMessage } from "./state-machine.ts";
 
 const GRAPH_API_VERSION = "v23.0";
@@ -98,18 +99,65 @@ export function textMessage(to: string, body: string) {
   return { messaging_product: "whatsapp", to, type: "text", text: { body } };
 }
 
-// Botões de resposta: até 3, título com até 20 caracteres.
-export function buttonsMessage(to: string, body: string, buttons: { id: string; title: string }[]) {
+function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+// Botões de resposta: até 3, título com até 20 caracteres; corpo até 1024.
+// Com imageUrl, a foto vai no cabeçalho da mesma mensagem.
+export function buttonsMessage(
+  to: string,
+  body: string,
+  buttons: { id: string; title: string }[],
+  imageUrl?: string | null,
+) {
   return {
     messaging_product: "whatsapp",
     to,
     type: "interactive",
     interactive: {
       type: "button",
-      body: { text: body },
-      action: { buttons: buttons.map((reply) => ({ type: "reply", reply })) },
+      ...(imageUrl ? { header: { type: "image", image: { link: imageUrl } } } : {}),
+      body: { text: clip(body, 1024) },
+      action: {
+        buttons: buttons.map(({ id, title }) => ({ type: "reply", reply: { id, title: clip(title, 20) } })),
+      },
     },
   };
+}
+
+// Lista: até 10 linhas, título com até 24 caracteres e descrição com até 72.
+export function listMessage(to: string, body: string, button: string, rows: Option[]) {
+  return {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text: clip(body, 4096) },
+      action: {
+        button: clip(button, 20),
+        sections: [{
+          rows: rows.map(({ id, title, description }) => ({
+            id,
+            title: clip(title, 24),
+            ...(description ? { description: clip(description, 72) } : {}),
+          })),
+        }],
+      },
+    },
+  };
+}
+
+// Converte uma tela em mensagem. O corpo lista as opções numeradas, que o
+// cliente pode responder em texto se a interação não aparecer (seção 9).
+export function screenMessage(to: string, screen: Screen, imageUrl?: string | null) {
+  if (screen.kind === "text") return textMessage(to, screen.body);
+  const numbered = screen.options.map((option, i) => `${i + 1}. ${option.title}`).join("\n");
+  const body = `${screen.body}\n\n_Se preferir, responda com o número:_\n${numbered}`;
+  return screen.kind === "buttons"
+    ? buttonsMessage(to, body, screen.options, imageUrl)
+    : listMessage(to, body, screen.button, screen.options);
 }
 
 export interface WhatsAppConfig {

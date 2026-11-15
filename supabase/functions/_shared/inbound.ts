@@ -9,21 +9,32 @@ import {
   loadConversation,
   saveConversation,
 } from "./conversations.ts";
+import { loadCatalog, PRODUCT_IMAGES_BUCKET } from "./catalog.ts";
+import type { Catalog } from "./catalog-model.ts";
 import { HANDOFF_CONFIRMATION, handoffChanges, ownerHandoffNotice } from "./handoff.ts";
 import { notifyOwner } from "./notify.ts";
 import {
-  type Action,
-  HANDOFF_OPTION_ID,
-  HANDOFF_TEXT_OPTION,
-  isInactive,
-  transition,
-  type Transition,
-} from "./state-machine.ts";
+  getCustomerOrder,
+  listRecentOrders,
+  NO_ORDERS,
+  ORDER_NOT_FOUND,
+  orderDetailsText,
+  orderListScreen,
+} from "./order-status.ts";
+import {
+  createOrder,
+  orderConfirmation,
+  orderIdempotencyKey,
+  ownerOrderNotice,
+  ProductUnavailableError,
+} from "./orders.ts";
+import { cartView, mainMenuScreen, type Screen } from "./screens.ts";
+import { type Action, isInactive, transition, type Transition } from "./state-machine.ts";
 import { createServiceClient, type Db, requireEnv } from "./supabase.ts";
 import {
-  buttonsMessage,
   contactName,
   type InboundMessage,
+  screenMessage,
   sendMessage,
   textMessage,
   toIncomingMessage,
@@ -34,8 +45,8 @@ import {
 // uma rajada curta de mensagens simultâneas.
 const MAX_SAVE_ATTEMPTS = 5;
 
-const MAIN_MENU_TEXT =
-  `Olá! Aqui é a Scrapbook Store. Como podemos ajudar?\n\nToque no botão abaixo ou responda *${HANDOFF_TEXT_OPTION}* para falar com a responsável pela loja.`;
+const PRODUCT_UNAVAILABLE =
+  "Um dos itens ficou indisponível enquanto você confirmava. Revise o carrinho antes de enviar.";
 
 export interface Deps {
   db: Db;
@@ -99,25 +110,52 @@ async function finish(db: Db, id: string, status: FinalStatus, conversationId: s
   if (updateError) throw updateError;
 }
 
+interface Advanced {
+  conversation: Conversation;
+  result: Transition;
+  catalog: Catalog;
+  orderId: string | null;
+}
+
 // Aplica a transição com controle otimista: em conflito, relê a conversa e
-// recalcula a partir do estado gravado pela outra execução.
+// recalcula a partir do estado gravado pela outra execução. O pedido é criado
+// antes de gravar a conversa: se a gravação ou o envio falharem, reprocessar
+// a mesma mensagem encontra o carrinho e a RPC devolve o mesmo pedido.
 async function advance(
   db: Db,
   customer: Customer,
   initial: Conversation,
   message: ReturnType<typeof toIncomingMessage>,
-): Promise<{ conversation: Conversation; result: Transition } | null> {
+  waMessageId: string,
+): Promise<Advanced | null> {
   let conversation = initial;
+  let catalog = await loadCatalog(db);
   for (let attempt = 0; attempt < MAX_SAVE_ATTEMPTS; attempt++) {
     if (conversation.humanHandoff) return null;
 
     const now = new Date();
     const inactive = isInactive(conversation.lastInteractionAt, now);
-    const result = transition(
+    let result = transition(
       inactive ? "MAIN_MENU" : conversation.currentState,
       inactive ? {} : conversation.context,
       message,
+      catalog,
     );
+
+    let orderId: string | null = null;
+    const create = result.actions.find((action) => action.type === "create_order");
+    if (create) {
+      try {
+        orderId = await createOrder(db, customer.id, create.items, orderIdempotencyKey(waMessageId));
+      } catch (error) {
+        if (!(error instanceof ProductUnavailableError)) throw error;
+        // Produto desativado entre a leitura do catálogo e a RPC: relê o
+        // catálogo e reapresenta o carrinho, que sai sem o item.
+        catalog = await loadCatalog(db);
+        const review = transition("CART_REVIEW", conversation.context, { kind: "unsupported" }, catalog);
+        result = { ...review, actions: [{ type: "send_text", text: PRODUCT_UNAVAILABLE }, ...review.actions] };
+      }
+    }
     const startsHandoff = result.actions.some((action) => action.type === "start_handoff");
 
     const saved = await saveConversation(db, conversation, {
@@ -126,24 +164,58 @@ async function advance(
       last_interaction_at: now.toISOString(),
       ...(startsHandoff ? handoffChanges(now) : {}),
     });
-    if (saved) return { conversation: saved, result };
+    if (saved) return { conversation: saved, result, catalog, orderId };
     conversation = await loadConversation(db, customer.id);
   }
   throw new Error(`conflito de concorrência na conversa ${initial.id} após ${MAX_SAVE_ATTEMPTS} tentativas`);
 }
 
-async function execute(deps: Deps, customer: Customer, action: Action) {
+function imageUrl(db: Db, screen: Screen): string | null {
+  if (screen.kind !== "buttons" || !screen.imagePath) return null;
+  return db.storage.from(PRODUCT_IMAGES_BUCKET).getPublicUrl(screen.imagePath).data.publicUrl;
+}
+
+async function execute(deps: Deps, customer: Customer, action: Action, advanced: Advanced) {
+  const { db, whatsapp } = deps;
+  const send = (message: Parameters<typeof sendMessage>[1]) => sendMessage(whatsapp, message);
   switch (action.type) {
-    case "send_main_menu":
-      await sendMessage(
-        deps.whatsapp,
-        buttonsMessage(customer.phone, MAIN_MENU_TEXT, [{ id: HANDOFF_OPTION_ID, title: "Falar c/ responsável" }]),
-      );
+    case "send_screen":
+      await send(screenMessage(customer.phone, action.screen, imageUrl(db, action.screen)));
+      break;
+    case "send_text":
+      await send(textMessage(customer.phone, action.text));
       break;
     case "start_handoff":
-      await sendMessage(deps.whatsapp, textMessage(customer.phone, HANDOFF_CONFIRMATION));
-      await notifyOwner(deps.whatsapp, deps.ownerPhone, ownerHandoffNotice(customer));
+      await send(textMessage(customer.phone, HANDOFF_CONFIRMATION));
+      await notifyOwner(whatsapp, deps.ownerPhone, ownerHandoffNotice(customer));
       break;
+    case "show_orders": {
+      const orders = await listRecentOrders(db, customer.id);
+      if (orders.length) {
+        await send(screenMessage(customer.phone, orderListScreen(orders)));
+      } else {
+        await send(textMessage(customer.phone, NO_ORDERS));
+        await send(screenMessage(customer.phone, mainMenuScreen()));
+      }
+      break;
+    }
+    case "show_order": {
+      const order = await getCustomerOrder(db, customer.id, action.orderId);
+      await send(textMessage(customer.phone, order ? orderDetailsText(order) : ORDER_NOT_FOUND));
+      await send(screenMessage(customer.phone, mainMenuScreen()));
+      break;
+    }
+    case "create_order": {
+      const orderId = advanced.orderId!;
+      console.log("inbound: pedido criado", { conversationId: advanced.conversation.id, orderId });
+      await send(textMessage(customer.phone, orderConfirmation(orderId)));
+      await notifyOwner(
+        whatsapp,
+        deps.ownerPhone,
+        ownerOrderNotice(customer, orderId, cartView(action.items, advanced.catalog)),
+      );
+      break;
+    }
   }
 }
 
@@ -151,7 +223,7 @@ export async function processInboundMessage(deps: Deps, id: string): Promise<Fin
   const { db } = deps;
   const { data: row, error } = await db
     .from("whatsapp_inbound_messages")
-    .select("id, phone, payload, status, attempts")
+    .select("id, wa_message_id, phone, payload, status, attempts")
     .eq("id", id)
     .single();
   if (error) throw error;
@@ -172,13 +244,13 @@ export async function processInboundMessage(deps: Deps, id: string): Promise<Fin
     conversationId = conversation.id;
 
     // Atendimento humano ativo: o bot não responde (EF-01, etapa 9).
-    const advanced = await advance(db, customer, conversation, toIncomingMessage(payload.message));
+    const advanced = await advance(db, customer, conversation, toIncomingMessage(payload.message), row.wa_message_id);
     if (!advanced) {
       await finish(db, id, "ignored", conversationId);
       return "ignored";
     }
 
-    for (const action of advanced.result.actions) await execute(deps, customer, action);
+    for (const action of advanced.result.actions) await execute(deps, customer, action, advanced);
     await finish(db, id, "processed", conversationId);
     return "processed";
   } catch (cause) {
