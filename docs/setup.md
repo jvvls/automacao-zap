@@ -1,4 +1,4 @@
-# Configuração do WhatsApp (Fase 3)
+# Configuração do WhatsApp (Fase 3) e do frete (Fase 5)
 
 Passo a passo para ligar a Edge Function `whatsapp-webhook` a um número real
 da WhatsApp Cloud API. Os nomes de menus da Meta mudam com frequência; na
@@ -86,3 +86,37 @@ JWT do Supabase, e a função rejeita qualquer `POST` sem assinatura
 
 A versão da Graph API usada pela função fica em `GRAPH_API_VERSION`, em
 `supabase/functions/_shared/whatsapp.ts`.
+
+## 6. Frete pelo Melhor Envio (Fase 5)
+
+Sem estes segredos o bot funciona normalmente: depois do CEP, avisa que não
+conseguiu calcular o frete e segue para o resumo, e o pedido fica com o CEP e
+o frete "não cotado".
+
+| Segredo                    | Onde obter                                                                 |
+| -------------------------- | -------------------------------------------------------------------------- |
+| `MELHORENVIO_ACCESS_TOKEN` | Token gerado no painel do Melhor Envio (área de integrações / tokens de acesso), com permissão de cálculo de frete (`shipping-calculate`). Confira o caminho na [documentação atual](https://docs.melhorenvio.com.br). |
+| `STORE_POSTAL_CODE`        | CEP de onde a loja despacha, só os 8 números.                             |
+| `MELHORENVIO_USER_AGENT`   | Nome da aplicação e e-mail de contato, exigido pelo Melhor Envio: `Scrapbook Store (email@da-loja)`. |
+| `MELHORENVIO_API_URL`      | Opcional. Padrão `https://melhorenvio.com.br`; para testes, `https://sandbox.melhorenvio.com.br` com um token gerado no sandbox. |
+
+```sh
+npx supabase secrets set --project-ref sgaedwkfxizcotdlaxjx \
+  MELHORENVIO_ACCESS_TOKEN=... STORE_POSTAL_CODE=... \
+  MELHORENVIO_USER_AGENT="Scrapbook Store (email@da-loja)"
+```
+
+A função lê os segredos a cada mensagem; não precisa publicar de novo.
+
+- **Embalagem:** a cotação vai por produtos. Cada item leva peso e dimensões
+  de envio cadastrados no painel, e o Melhor Envio monta as caixas. O valor
+  segurado é o preço do produto. Por isso, peso e dimensões no cadastro devem
+  ser os do produto já embalado.
+- **Validade do token:** o token tem prazo de validade. Anote a data ao gerar
+  e, antes de vencer, gere outro e rode o `secrets set` de novo. Token vencido
+  aparece no log como `shipping: cotação falhou` com `Melhor Envio 401`.
+- **Logs:** `shipping: cotação falhou` (erro da API ou timeout de 10 s),
+  `shipping: nenhum serviço para o CEP` e `shipping: Melhor Envio não
+  configurado`. Em todos os casos o cliente pode enviar a solicitação.
+- **Cotações:** as opções mostradas ao cliente ficam em `shipping_quotes`; a
+  escolhida aponta para o pedido (`order_id`).

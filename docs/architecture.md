@@ -355,6 +355,29 @@ seja adequada aos itens. Se os pedidos variarem muito de tamanho,
 apresentar a cotação como estimativa sujeita à validação manual da
 responsável.
 
+**Decisão da Fase 5:**
+
+-   **Regra de embalagem:** cotação por produtos. Cada item vai com peso e
+    dimensões unitários de envio (`shipping_*`) e a quantidade, e o
+    Melhor Envio monta os volumes. O valor segurado é o preço do produto.
+    Preço e prazo aparecem ao cliente como estimativa.
+-   **Fluxo:** "Enviar solicitação" no carrinho pede o CEP
+    (`POSTAL_CODE_INPUT`), com as opções "Seguir sem frete" e "Voltar ao
+    carrinho". Com CEP válido, o webhook cota e lista até 8 serviços, do
+    mais barato ao mais caro (`SHIPPING_SELECTION`), mais "Outro CEP" e
+    "Seguir sem frete". O resumo (`ORDER_CONFIRMATION`) mostra o frete
+    escolhido e o total estimado.
+-   **Sem cotação** (API com erro, timeout de 10 s, nenhum serviço ou
+    segredos ausentes): o cliente é avisado e segue ao resumo. O pedido
+    grava o CEP com `shipping_cost` nulo, ou seja, frete não cotado
+    (seção 10.3).
+-   **No pedido:** a RPC recebe o id da cotação escolhida e lê preço,
+    serviço e CEP de `shipping_quotes`. Só aceita cotação da conversa do
+    próprio cliente que ainda não tenha pedido. `total_estimated` é o
+    subtotal mais o frete.
+-   A função HTTP `calculate-shipping` não foi criada, porque nada a
+    consumiria no MVP.
+
 Não comprar etiquetas nem automatizar despacho no MVP.
 
 ## 5. Modelagem de dados
