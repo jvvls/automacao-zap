@@ -28,6 +28,8 @@ cd apps/admin
 cp ../../.env.example .env.local   # preencher com a URL e a chave de `npx supabase status`
 npm install
 npm run dev
+npx playwright install chromium    # uma vez, para os testes e2e
+npm run test:e2e                   # testes do painel contra o Supabase local com seed
 ```
 
 Usuário administrativo do seed local: `admin@scrapbook.local` / `admin123456`.
