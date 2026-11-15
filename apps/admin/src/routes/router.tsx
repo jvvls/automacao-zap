@@ -1,7 +1,8 @@
-import { Title } from '@mantine/core'
 import { createBrowserRouter, Navigate } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { LoginPage } from '../pages/LoginPage'
+import { ProductFormPage } from '../pages/ProductFormPage'
+import { ProductsPage } from '../pages/ProductsPage'
 import { RequireAdmin } from './RequireAdmin'
 
 export const router = createBrowserRouter([
@@ -13,7 +14,12 @@ export const router = createBrowserRouter([
         <AppLayout />
       </RequireAdmin>
     ),
-    children: [{ index: true, element: <Title order={2}>Painel</Title> }],
+    children: [
+      { index: true, element: <Navigate to="/produtos" replace /> },
+      { path: 'produtos', element: <ProductsPage /> },
+      { path: 'produtos/novo', element: <ProductFormPage /> },
+      { path: 'produtos/:id', element: <ProductFormPage /> },
+    ],
   },
   { path: '*', element: <Navigate to="/" replace /> },
 ])
