@@ -2,6 +2,7 @@
 
 Arquitetura e plano: [`docs/architecture.md`](docs/architecture.md).
 Configuração do WhatsApp: [`docs/setup.md`](docs/setup.md).
+Publicação, operação e recuperação: [`docs/operacao.md`](docs/operacao.md).
 
 ## Estrutura
 
@@ -44,7 +45,8 @@ O Deno vem do `package.json` da raiz (`npm install` uma vez).
 npm run test:functions             # unitários: máquina de estados, carrinho, frete e formatos da Meta
 
 # integrado: webhook servido com segredos falsos, uma Graph API falsa na porta
-# 54400 e um Melhor Envio falso na porta 54401
+# 54400 e um Melhor Envio falso na porta 54401; inclui o teste de banco fora
+# do ar (supabase-down.test.ts), que não depende das funções servidas
 npx supabase functions serve --env-file supabase/functions/.env.test
 SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY de `npx supabase status -o env`> \
   npm run test:functions:integration
