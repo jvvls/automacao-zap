@@ -1,6 +1,7 @@
 # Scrapbook Store — automação de pedidos pelo WhatsApp
 
 Arquitetura e plano: [`docs/architecture.md`](docs/architecture.md).
+Configuração do WhatsApp: [`docs/setup.md`](docs/setup.md).
 
 ## Estrutura
 
@@ -33,6 +34,19 @@ npm run test:e2e                   # testes do painel contra o Supabase local co
 ```
 
 Usuário administrativo do seed local: `admin@scrapbook.local` / `admin123456`.
+
+### Testes das Edge Functions
+
+O Deno vem do `package.json` da raiz (`npm install` uma vez).
+
+```sh
+npm run test:functions             # unitários: máquina de estados e formatos da Meta
+
+# integrado: webhook servido com segredos falsos e uma Graph API falsa na porta 54400
+npx supabase functions serve --env-file supabase/functions/.env.test
+SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY de `npx supabase status -o env`> \
+  npm run test:functions:integration
+```
 
 ## Convenções
 

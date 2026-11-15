@@ -1,0 +1,67 @@
+# Configuração do WhatsApp (Fase 3)
+
+Passo a passo para ligar a Edge Function `whatsapp-webhook` a um número real
+da WhatsApp Cloud API. Os nomes de menus da Meta mudam com frequência; na
+dúvida, siga a [documentação oficial](https://developers.facebook.com/docs/whatsapp/cloud-api/get-started).
+
+## 1. Aplicativo e número na Meta
+
+1. Em [Meta for Developers](https://developers.facebook.com/apps), criar um app
+   do tipo **Business** e adicionar o produto **WhatsApp**.
+2. Associar a conta WhatsApp Business e o número da loja (ou usar o número de
+   teste da Meta durante o desenvolvimento).
+3. **Coexistência:** confirmar se o número pode ser usado ao mesmo tempo pela
+   Cloud API e pelo aplicativo WhatsApp Business (seção 4.4 da arquitetura).
+   Se não puder, definir como a responsável vai atender as conversas
+   transferidas antes de ir para produção.
+
+## 2. Credenciais
+
+| Segredo                    | Onde obter                                                                 |
+| -------------------------- | -------------------------------------------------------------------------- |
+| `WHATSAPP_ACCESS_TOKEN`    | Token de **usuário do sistema** (Configurações do negócio → Usuários do sistema), com `whatsapp_business_messaging` e `whatsapp_business_management`. Não usar o token temporário de teste. |
+| `WHATSAPP_PHONE_NUMBER_ID` | Painel do WhatsApp no app → *API Setup* → *Phone number ID*.              |
+| `WHATSAPP_APP_SECRET`      | Configurações do app → Básico → Chave secreta do app.                     |
+| `WHATSAPP_VERIFY_TOKEN`    | Texto aleatório escolhido por vocês (ex.: `openssl rand -hex 24`).        |
+| `OWNER_WHATSAPP_NUMBER`    | Número pessoal da responsável, só dígitos com DDI (ex.: `5511999998888`). |
+
+> Até a Fase 4 o aviso à responsável é texto simples. A Meta só entrega texto
+> livre dentro da janela de 24 horas, então o aviso chega apenas se a
+> responsável tiver mandado mensagem ao número da loja nas últimas 24 horas.
+> Quando não chega, o erro fica no log da função e o cliente é atendido
+> normalmente.
+
+## 3. Segredos e deploy no Supabase
+
+```sh
+npx supabase secrets set --project-ref sgaedwkfxizcotdlaxjx \
+  WHATSAPP_ACCESS_TOKEN=... WHATSAPP_PHONE_NUMBER_ID=... \
+  WHATSAPP_APP_SECRET=... WHATSAPP_VERIFY_TOKEN=... OWNER_WHATSAPP_NUMBER=...
+
+npx supabase functions deploy whatsapp-webhook --project-ref sgaedwkfxizcotdlaxjx
+```
+
+O `config.toml` já publica a função com `verify_jwt = false`: a Meta não envia
+JWT do Supabase, e a função rejeita qualquer `POST` sem assinatura
+`X-Hub-Signature-256` válida.
+
+## 4. Webhook na Meta
+
+1. No app → WhatsApp → *Configuration* → *Webhook*:
+   - **Callback URL:** `https://sgaedwkfxizcotdlaxjx.supabase.co/functions/v1/whatsapp-webhook`
+   - **Verify token:** o mesmo `WHATSAPP_VERIFY_TOKEN`.
+2. Assinar o campo **`messages`**.
+3. Mandar "oi" para o número da loja. O bot responde com o menu, e a mensagem
+   aparece em `whatsapp_inbound_messages` com status `processed`.
+
+## 5. Acompanhamento
+
+- **Logs:** painel do Supabase → Edge Functions → `whatsapp-webhook` → Logs.
+- **Mensagens:** `whatsapp_inbound_messages.status` — `processed`, `ignored`
+  (conversa em atendimento humano), `failed` (com `error`) ou `received`
+  (execução interrompida; seção 5.9).
+- **Atendimento humano:** a tela *Atendimento* do painel lista as conversas com
+  o bot pausado e permite reativá-lo.
+
+A versão da Graph API usada pela função fica em `GRAPH_API_VERSION`, em
+`supabase/functions/_shared/whatsapp.ts`.
