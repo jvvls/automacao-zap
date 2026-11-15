@@ -30,4 +30,7 @@ export const router = createBrowserRouter([
     ],
   },
   { path: '*', element: <Navigate to="/" replace /> },
-])
+], {
+  // No GitHub Pages o painel fica em /<repositório>/ (`vite build --base`).
+  basename: import.meta.env.BASE_URL,
+})
