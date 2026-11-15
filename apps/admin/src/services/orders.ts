@@ -9,6 +9,16 @@ export async function listOrders() {
   return data
 }
 
+// Pedidos ainda em "Recebido": a responsável não começou a análise.
+export async function countNewOrders() {
+  const { count, error } = await supabase
+    .from('orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'received')
+  if (error) throw error
+  return count ?? 0
+}
+
 export async function getOrder(id: string) {
   const { data, error } = await supabase
     .from('orders')

@@ -10,6 +10,15 @@ export async function listHandoffConversations() {
   return data
 }
 
+export async function countHandoffConversations() {
+  const { count, error } = await supabase
+    .from('conversations')
+    .select('id', { count: 'exact', head: true })
+    .eq('human_handoff', true)
+  if (error) throw error
+  return count ?? 0
+}
+
 export type HandoffConversation = Awaited<ReturnType<typeof listHandoffConversations>>[number]
 
 // O painel só pode alterar human_handoff (grant da Fase 1); o trigger
