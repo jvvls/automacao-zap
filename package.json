@@ -1,0 +1,10 @@
+{
+  "name": "automacao-zap",
+  "private": true,
+  "scripts": {
+    "test:functions": "deno test --allow-env --allow-net --allow-read supabase/functions/tests"
+  },
+  "devDependencies": {
+    "deno": "^2.9.6"
+  }
+}
