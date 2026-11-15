@@ -6,6 +6,7 @@
     "test:functions:integration": "deno test --node-modules-dir=none --config supabase/functions/whatsapp-webhook/deno.json --allow-env --allow-net --allow-read supabase/functions/tests/integration"
   },
   "devDependencies": {
-    "deno": "^2.9.6"
+    "deno": "^2.9.6",
+    "supabase": "3.1.0"
   }
 }
