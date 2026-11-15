@@ -23,6 +23,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { IMAGE_TYPES, productValidation, type ProductFormValues } from '../lib/productValidation'
+import { isUniqueViolation } from '../lib/supabaseErrors'
 import {
   createCategory,
   getProduct,
@@ -272,8 +273,4 @@ function ProductForm({ product }: { product: Product | null }) {
       </Stack>
     </form>
   )
-}
-
-function isUniqueViolation(error: unknown) {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === '23505'
 }

@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase'
 
 const links = [
   { to: '/produtos', label: 'Produtos' },
+  { to: '/categorias', label: 'Categorias' },
   { to: '/pedidos', label: 'Pedidos' },
 ]
 
